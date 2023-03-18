@@ -1,0 +1,33 @@
+---
+
+name: Build and test
+"on": push
+
+jobs:
+  build-and-test:
+    strategy:
+      matrix:
+        os: [ubuntu-22.04, ubuntu-20.04, ubuntu-18.04]
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Install dependencies
+        run: sudo apt-get -y install "linux-headers-$(uname -r)"
+
+      - name: Build
+        run: |
+          make -j"$(nproc)"
+          sudo make install
+          sudo depmod -a
+          sudo modprobe cryptodev
+
+      - name: Test
+        run: |
+          for example_name in 842 aes lzo sha; do
+            echo **EXAMPLE ${example_name}**
+            cc -o examples/${example_name} examples/${example_name}.c
+            examples/${example_name}
+          done

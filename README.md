@@ -1,6 +1,6 @@
 # cryptodev-linux-comp (cryptodev-linux) with compression support
 
-Build status: https://travis-ci.org/github/joanbm/cryptodev-linux
+[![Build and test](https://github.com/joanbm/cryptodev-linux-comp/actions/workflows/build-and-test.yaml/badge.svg)](https://github.com/joanbm/cryptodev-linux-comp/actions/workflows/build-and-test.yaml)
 
 This repository contains a fork of [cryptodev-linux](http://cryptodev-linux.org/) with compression support, which allows accessing hardware compressors from userspace.
 

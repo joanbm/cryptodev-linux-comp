@@ -50,9 +50,9 @@ static const unsigned int compr_buffer_order =
 #define COMPR_ENSURE_RAW_842_BITSTREAMS
 //#define COMPR_WORKAROUND_DISABLE_ZEROCOPY
 
-static void cryptodev_complete(struct crypto_async_request *req, int err)
+static void cryptodev_complete(void *data, int err)
 {
-	struct cryptodev_result *res = req->data;
+	struct cryptodev_result *res = data;
 
 	if (err == -EINPROGRESS)
 		return;
@@ -60,6 +60,14 @@ static void cryptodev_complete(struct crypto_async_request *req, int err)
 	res->err = err;
 	complete(&res->completion);
 }
+
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(6, 3, 0))
+static void cryptodev_complete_shim(struct crypto_async_request *req, int err)
+{
+	cryptodev_complete(req->data, err);
+}
+#define cryptodev_complete cryptodev_complete_shim
+#endif
 
 int cryptodev_get_cipher_keylen(unsigned int *keylen, struct session_op *sop,
 		int aead)
@@ -731,7 +739,8 @@ int cryptodev_hash_copy(struct hash_data *dst, struct hash_data *src)
 	void *statedata = NULL;
 	struct crypto_tfm *tfm;
 
-	if (unlikely(src == NULL || dst == NULL)) {
+	if (unlikely(src == NULL || !src->init ||
+		     dst == NULL || !dst->init)) {
 		return -EINVAL;
 	}
 

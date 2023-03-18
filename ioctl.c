@@ -149,6 +149,15 @@ crypto_create_session(struct fcrypt *fcr, struct session_op *sop)
 	case CRYPTO_AES_ECB:
 		alg_name = "ecb(aes)";
 		break;
+	case CRYPTO_AES_CFB:
+		alg_name = "cfb(aes)";
+		break;
+	case CRYPTO_AES_OFB:
+		alg_name = "ofb(aes)";
+		break;
+	case CRYPTO_AES_XTS:
+		alg_name = "xts(aes)";
+		break;
 	case CRYPTO_CAMELLIA_CBC:
 		alg_name = "cbc(camellia)";
 		break;
@@ -158,6 +167,11 @@ crypto_create_session(struct fcrypt *fcr, struct session_op *sop)
 		break;
 	case CRYPTO_AES_GCM:
 		alg_name = "gcm(aes)";
+		stream = 1;
+		aead = 1;
+		break;
+	case CRYPTO_AES_CCM:
+		alg_name = "ccm(aes)";
 		stream = 1;
 		aead = 1;
 		break;
@@ -461,6 +475,59 @@ crypto_get_session_by_sid(struct fcrypt *fcr, uint32_t sid)
 	return retval;
 }
 
+static void mutex_lock_double(struct mutex *a, struct mutex *b)
+{
+	if (b < a)
+		swap(a, b);
+
+	mutex_lock(a);
+	mutex_lock_nested(b, SINGLE_DEPTH_NESTING);
+}
+
+int
+crypto_get_sessions_by_sid(struct fcrypt *fcr,
+			   uint32_t sid_1, struct csession **ses_ptr_1,
+			   uint32_t sid_2, struct csession **ses_ptr_2)
+{
+	struct csession *ses_ptr;
+	int retval;
+
+	if (unlikely(fcr == NULL)) {
+		retval = -ENOENT;
+		goto out;
+	}
+
+	if (sid_1 == sid_2) {
+		retval = -EDEADLK;
+		goto out;
+	}
+
+	mutex_lock(&fcr->sem);
+
+	list_for_each_entry(ses_ptr, &fcr->list, entry) {
+		if (ses_ptr->sid == sid_1)
+			*ses_ptr_1 = ses_ptr;
+		else if (ses_ptr->sid == sid_2)
+			*ses_ptr_2 = ses_ptr;
+	}
+
+	if (*ses_ptr_1 && *ses_ptr_2) {
+		mutex_lock_double(&(*ses_ptr_1)->sem, &(*ses_ptr_2)->sem);
+		retval = 0;
+	} else {
+		retval = -ENOENT;
+	}
+
+	mutex_unlock(&fcr->sem);
+
+out:
+	if (retval) {
+		*ses_ptr_1 = NULL;
+		*ses_ptr_2 = NULL;
+	}
+	return retval;
+}
+
 #ifdef CIOCCPHASH
 /* Copy the hash state from one session to another */
 static int
@@ -469,17 +536,12 @@ crypto_copy_hash_state(struct fcrypt *fcr, uint32_t dst_sid, uint32_t src_sid)
 	struct csession *src_ses, *dst_ses;
 	int ret;
 
-	src_ses = crypto_get_session_by_sid(fcr, src_sid);
-	if (unlikely(src_ses == NULL)) {
-		derr(1, "Session with sid=0x%08X not found!", src_sid);
-		return -ENOENT;
-	}
-
-	dst_ses = crypto_get_session_by_sid(fcr, dst_sid);
-	if (unlikely(dst_ses == NULL)) {
-		derr(1, "Session with sid=0x%08X not found!", dst_sid);
-		crypto_put_session(src_ses);
-		return -ENOENT;
+	ret = crypto_get_sessions_by_sid(fcr, src_sid, &src_ses,
+					 dst_sid, &dst_ses);
+	if (unlikely(ret)) {
+		derr(1, "Failed to get sesssions with sid=0x%08X sid=%0x08X!",
+		     src_sid, dst_sid);
+		return ret;
 	}
 
 	ret = cryptodev_hash_copy(&dst_ses->hdata, &src_ses->hdata);

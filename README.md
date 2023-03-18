@@ -1,4 +1,4 @@
-# cryptodev-linux-comp (cryptodev-linux) with compression support
+# cryptodev-linux-comp (cryptodev-linux with compression support)
 
 [![Build and test](https://github.com/joanbm/cryptodev-linux-comp/actions/workflows/build-and-test.yaml/badge.svg)](https://github.com/joanbm/cryptodev-linux-comp/actions/workflows/build-and-test.yaml)
 

@@ -109,7 +109,11 @@ int cryptodev_hash_copy(struct hash_data *dst, struct hash_data *src);
 struct compr_data {
 	int init; /* 0 uninitialized */
 	int alignmask;
-	struct crypto_comp *tfm;
+	struct {
+		struct crypto_acomp *s;
+		struct cryptodev_result result;
+		struct acomp_req *request;
+	} async;
 	u8 *srcbuf;
 	u8 *dstbuf;
 	int slowpath_warned;

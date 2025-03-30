@@ -465,17 +465,33 @@ int cryptodev_hash_final(struct hash_data *hdata, void *output)
 
 int cryptodev_compr_init(struct compr_data *comprdata, const char *alg_name)
 {
-	comprdata->tfm = crypto_alloc_comp(alg_name, 0, 0);
-	if (IS_ERR(comprdata->tfm)) {
+	comprdata->async.s = crypto_alloc_acomp(alg_name, 0, 0);
+	if (unlikely(IS_ERR(comprdata->async.s))) {
 		pr_err("could not create compressor %s : %ld\n",
-			 alg_name, PTR_ERR(comprdata->tfm));
-		return PTR_ERR(comprdata->tfm);
+			 alg_name, PTR_ERR(comprdata->async.s));
+		return PTR_ERR(comprdata->async.s);
 	}
+
+	init_completion(&comprdata->async.result.completion);
+
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 15, 0))
+	comprdata->async.request = acomp_request_alloc(comprdata->async.s, GFP_KERNEL);
+#else
+	comprdata->async.request = acomp_request_alloc(comprdata->async.s);
+#endif
+	if (unlikely(!comprdata->async.request)) {
+		derr(0, "error allocating async crypto request");
+		goto allocerr_free_acomp;
+	}
+
+	acomp_request_set_callback(comprdata->async.request,
+			CRYPTO_TFM_REQ_MAY_BACKLOG,
+			cryptodev_complete, &comprdata->async.result);
 
 	comprdata->srcbuf = (u8 *)__get_free_pages(GFP_KERNEL, compr_buffer_order);
 	if (!comprdata->srcbuf) {
 		pr_err("could not allocate temporary compression source buffer\n");
-		goto allocerr_free_tfm;
+		goto allocerr_free_request;
 	}
 
 	comprdata->dstbuf = (u8 *)__get_free_pages(GFP_KERNEL, compr_buffer_order);
@@ -484,7 +500,8 @@ int cryptodev_compr_init(struct compr_data *comprdata, const char *alg_name)
 		goto allocerr_free_srcbuf;
 	}
 
-	comprdata->alignmask = crypto_tfm_alg_alignmask(crypto_comp_tfm(comprdata->tfm));
+	comprdata->alignmask = crypto_tfm_alg_alignmask(
+		crypto_acomp_tfm(comprdata->async.s));
 	comprdata->slowpath_warned = 0;
 	comprdata->init = 1;
 
@@ -492,21 +509,22 @@ int cryptodev_compr_init(struct compr_data *comprdata, const char *alg_name)
 
 allocerr_free_srcbuf:
 	free_pages((unsigned long)comprdata->srcbuf, compr_buffer_order);
-allocerr_free_tfm:
-	crypto_free_comp(comprdata->tfm);
+allocerr_free_request:
+	acomp_request_free(comprdata->async.request);
+allocerr_free_acomp:
+	crypto_free_acomp(comprdata->async.s);
 	return -ENOMEM;
 }
 
 void cryptodev_compr_deinit(struct compr_data *comprdata)
 {
-	if (comprdata->init == 1  && comprdata->tfm && !IS_ERR(comprdata->tfm)) {
+	if (comprdata->init) {
 		free_pages((unsigned long)comprdata->srcbuf, compr_buffer_order);
 		free_pages((unsigned long)comprdata->dstbuf, compr_buffer_order);
-		crypto_free_comp(comprdata->tfm);
+		acomp_request_free(comprdata->async.request);
+		crypto_free_acomp(comprdata->async.s);
+		comprdata->init = 0;
 	}
-
-	comprdata->tfm = NULL;
-	comprdata->init = 0;
 }
 
 /**
@@ -557,8 +575,10 @@ static ssize_t cryptodev_compr_run(struct compr_data *comprdata,
 	size_t src_available, dst_available;
 	bool zerocopy_src, zerocopy_dst;
 	u8 *chunk_src, *chunk_dst;
+	struct scatterlist request_src_sg, request_dst_sg;
 #ifdef COMPR_ENSURE_RAW_842_BITSTREAMS
-	bool is_842 = strcmp(crypto_tfm_alg_name(crypto_comp_tfm(comprdata->tfm)), "842") == 0;
+	bool is_842 = strcmp(crypto_tfm_alg_name(
+		crypto_acomp_tfm(comprdata->async.s)), "842") == 0;
 #endif /* COMPR_ENSURE_RAW_842_BITSTREAMS */
 
 	if (!comprdata->numchunks)
@@ -682,18 +702,23 @@ static ssize_t cryptodev_compr_run(struct compr_data *comprdata,
 			comprdata->slowpath_warned = 1;
 		}
 
-		if (compress) {
-			ret = crypto_comp_compress(comprdata->tfm,
-				chunk_src, comprdata->chunklens[i],
-				chunk_dst, &comprdata->chunkdlens[i]);
-		} else {
-			ret = crypto_comp_decompress(comprdata->tfm,
-				chunk_src, comprdata->chunklens[i],
-				chunk_dst, &comprdata->chunkdlens[i]);
-		}
+		reinit_completion(&comprdata->async.result.completion);
+
+		sg_init_one(&request_src_sg, chunk_src, comprdata->chunklens[i]);
+		sg_init_one(&request_dst_sg, chunk_dst, comprdata->chunkdlens[i]);
+		acomp_request_set_params(comprdata->async.request,
+			&request_src_sg, &request_dst_sg,
+			comprdata->chunklens[i], comprdata->chunkdlens[i]);
+
+		ret = compress
+			? crypto_acomp_compress(comprdata->async.request)
+			: crypto_acomp_decompress(comprdata->async.request);
+		ret = waitfor(&comprdata->async.result, ret);
+
 		if (ret != 0 && ret != -ENOSPC)
 			break;
 		comprdata->chunkrets[i] = ret;
+		comprdata->chunkdlens[i] = comprdata->async.request->dlen;
 		ret = 0;
 
 		if (zerocopy_dst) {

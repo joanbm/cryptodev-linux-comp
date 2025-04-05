@@ -467,9 +467,8 @@ int cryptodev_compr_init(struct compr_data *comprdata, const char *alg_name)
 {
 	comprdata->async.s = crypto_alloc_acomp(alg_name, 0, 0);
 	if (unlikely(IS_ERR(comprdata->async.s))) {
-		pr_err("could not create compressor %s : %ld\n",
-			 alg_name, PTR_ERR(comprdata->async.s));
-		return PTR_ERR(comprdata->async.s);
+		ddebug(1, "Failed to load compressor for %s", alg_name);
+		return -EINVAL;
 	}
 
 	init_completion(&comprdata->async.result.completion);
@@ -490,13 +489,13 @@ int cryptodev_compr_init(struct compr_data *comprdata, const char *alg_name)
 
 	comprdata->srcbuf = (u8 *)__get_free_pages(GFP_KERNEL, compr_buffer_order);
 	if (!comprdata->srcbuf) {
-		pr_err("could not allocate temporary compression source buffer\n");
+		derr(0, "could not allocate temporary compression source buffer\n");
 		goto allocerr_free_request;
 	}
 
 	comprdata->dstbuf = (u8 *)__get_free_pages(GFP_KERNEL, compr_buffer_order);
 	if (!comprdata->dstbuf) {
-		pr_err("could not allocate temporary compression destination buffer\n");
+		derr(0, "could not allocate temporary compression destination buffer\n");
 		goto allocerr_free_srcbuf;
 	}
 
